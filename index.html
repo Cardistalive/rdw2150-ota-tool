@@ -601,6 +601,12 @@ function waitForByte(accepted, timeoutMs, label) {
   });
 }
 
+function markRxText(label) {
+  const pos = rxTextBuffer.length;
+  log(`RX Text Mark${label ? ` ${label}` : ''}: pos=${pos}`);
+  return pos;
+}
+
 function findTextAfter(patterns, startAt = 0) {
   const list = Array.isArray(patterns) ? patterns : [patterns];
   const base = Math.max(0, Math.min(startAt || 0, rxTextBuffer.length));
@@ -615,6 +621,7 @@ function tryResolveTextWaiter(w) {
   const matched = findTextAfter(w.patterns, w.startAt || 0);
   if (matched) {
     removeTextWaiter(w);
+    log(`RX Text Match${w.label ? ` ${w.label}` : ''}: "${matched}", start=${w.startAt || 0}, len=${rxTextBuffer.length}`, 'ok');
     w.resolve(matched);
     return true;
   }
@@ -630,7 +637,7 @@ function removeTextWaiter(w) {
 function waitForText(patterns, timeoutMs, label, startAt = 0) {
   const list = Array.isArray(patterns) ? patterns : [patterns];
   return new Promise((resolve, reject) => {
-    const waiter = { patterns: list, startAt, resolve, reject, timer: null };
+    const waiter = { patterns: list, startAt, label, resolve, reject, timer: null };
     if (tryResolveTextWaiter(waiter)) return;
     waiter.timer = setTimeout(() => {
       removeTextWaiter(waiter);
@@ -641,8 +648,11 @@ function waitForText(patterns, timeoutMs, label, startAt = 0) {
 }
 
 function clearProtocolQueues() {
+  for (const w of rxWaiters) if (w.timer) clearTimeout(w.timer);
+  for (const w of textWaiters) if (w.timer) clearTimeout(w.timer);
   rxQueue = [];
   rxWaiters = [];
+  textWaiters = [];
 }
 
 function crc16Xmodem(bytes) {
@@ -697,10 +707,15 @@ async function bleWriteRaw(bytes) {
   const chunkSize = Math.max(1, Math.min(244, parseInt($('bleChunkSize').value || '20', 10)));
   const delayMs = Math.max(0, parseInt($('chunkDelayMs').value || '0', 10));
   const mode = $('writeMode').value;
+  const totalChunks = Math.ceil(bytes.length / chunkSize);
+  const traceChunks = bytes.length <= 133;
 
-  for (let off = 0; off < bytes.length; off += chunkSize) {
+  log(`BLE Write: len=${bytes.length}, chunk=${chunkSize}, chunks=${totalChunks}, mode=${mode}, delay=${delayMs}ms`);
+
+  for (let off = 0, idx = 1; off < bytes.length; off += chunkSize, idx++) {
     if (abortRequested) throw new Error('用户中止');
     const chunk = bytes.slice(off, off + chunkSize);
+    if (traceChunks) log(`BLE Chunk ${idx}/${totalChunks}: off=${off}, len=${chunk.length}, data=${bytesToHex(chunk, 64)}`);
 
     if (mode === 'withoutResponse' && typeof writeChar.writeValueWithoutResponse === 'function') {
       await writeChar.writeValueWithoutResponse(chunk);
@@ -786,18 +801,21 @@ async function rdwHandshakeToWaiting() {
   const waitingTimeoutMs = Math.max(500, parseInt($('waitingTimeoutMs').value || '15000', 10));
 
   setStatus('发送 AT+RF=0，等待 OK...');
+  const rfTextStart = markRxText('before AT+RF=0');
   await sendAsciiNoNewline($('cmdRfOff').value, 'RF OFF');
-  await waitForText(['OK'], atTimeoutMs, 'AT+RF=0 的 OK');
+  await waitForText(['OK'], atTimeoutMs, 'AT+RF=0 的 OK', rfTextStart);
   log('AT+RF=0 收到 OK', 'ok');
 
   setStatus('发送 AT+OTA=MAIN_MCU，等待主 MCU 菜单...');
+  const otaTextStart = markRxText('before AT+OTA');
   await sendAsciiNoNewline($('cmdOta').value, 'OTA CMD');
-  await waitForText(['Main Menu', 'Download OTA'], atTimeoutMs, 'Main Menu / Download OTA');
+  await waitForText(['Main Menu', 'Download OTA'], atTimeoutMs, 'Main Menu / Download OTA', otaTextStart);
   log('收到主 MCU Main Menu / Download OTA', 'ok');
 
   setStatus('发送菜单选择字符，等待 Waiting for...');
+  const selectTextStart = markRxText('before MENU SELECT');
   await sendAsciiNoNewline($('cmdSelect').value, 'MENU SELECT');
-  await waitForText(['Waiting for the file to be sent', 'Waiting for'], waitingTimeoutMs, 'Waiting for the file to be sent');
+  await waitForText(['Waiting for the file to be sent', 'Waiting for'], waitingTimeoutMs, 'Waiting for the file to be sent', selectTextStart);
   log('收到 Waiting for，主 MCU 已进入 YMODEM 接收', 'ok');
 
   if ($('clearBeforeYmodem').checked) {
