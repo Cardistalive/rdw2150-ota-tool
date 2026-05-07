@@ -1,0 +1,2 @@
+# rdw2150-ota-tool
+主设备(电脑、手机)连接作为从设备的RDW2150，然后主设备将马桶主MCU的A区的bin文件，用Ymodem拆分，然后每个Ymodem帧通过ATT下发给RDW2150，RDW2150转发给马桶主MCU，马桶主MCU的B区接收到完整的一个Ymodem帧后ACK/C，主设备继续发，直到将整个bin文件的数据都下发完成，马桶主MCU的B区也就写入了该bin文件，也就完成了升级
