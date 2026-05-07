@@ -1,0 +1,1047 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>RDW2150 BLE YMODEM OTA Tool</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #111827;
+      --muted: #94a3b8;
+      --text: #e5e7eb;
+      --border: #334155;
+      --accent: #38bdf8;
+      --danger: #fb7185;
+      --ok: #34d399;
+      --warn: #fbbf24;
+      --input: #020617;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+                   "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+      background: linear-gradient(135deg, #020617, var(--bg));
+      color: var(--text);
+    }
+    main { max-width: 1160px; margin: 0 auto; padding: 24px; }
+    h1 { margin: 0 0 8px; font-size: 28px; }
+    h2 { margin: 8px 0 12px; font-size: 20px; }
+    h3 { margin: 16px 0 8px; font-size: 16px; color: #cbd5e1; }
+    p { color: var(--muted); line-height: 1.6; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+    .card {
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: rgba(17,24,39,.88);
+      box-shadow: 0 20px 60px rgba(0,0,0,.25);
+      padding: 16px;
+    }
+    label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 6px; }
+    input, select, textarea, button { font: inherit; border-radius: 10px; }
+    input, select, textarea {
+      width: 100%;
+      padding: 10px 12px;
+      color: var(--text);
+      background: var(--input);
+      border: 1px solid var(--border);
+      outline: none;
+    }
+    input[type="checkbox"] { width: auto; }
+    textarea { min-height: 74px; resize: vertical; }
+    button {
+      border: 0;
+      padding: 10px 14px;
+      color: #001018;
+      background: var(--accent);
+      cursor: pointer;
+      font-weight: 700;
+      margin: 8px 8px 0 0;
+    }
+    button.secondary { background: #cbd5e1; }
+    button.danger { background: var(--danger); color: white; }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .row > * { flex: 1; }
+    .row .auto { flex: 0 0 auto; }
+    .status {
+      padding: 12px;
+      border-radius: 12px;
+      background: #020617;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      min-height: 50px;
+    }
+    progress { width: 100%; height: 20px; margin-top: 8px; }
+    #log, #rxText {
+      white-space: pre-wrap;
+      word-break: break-word;
+      height: 360px;
+      overflow: auto;
+      padding: 12px;
+      border-radius: 12px;
+      background: #020617;
+      border: 1px solid var(--border);
+      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    #rxText { height: 220px; }
+    .hint {
+      border-left: 4px solid var(--warn);
+      padding: 8px 12px;
+      background: rgba(251,191,36,.08);
+      border-radius: 8px;
+      color: #fde68a;
+    }
+    .ok { color: var(--ok); }
+    .warn { color: var(--warn); }
+    .dangerText { color: var(--danger); }
+    code {
+      background: #020617;
+      border: 1px solid var(--border);
+      padding: 1px 5px;
+      border-radius: 6px;
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>RDW2150 BLE YMODEM OTA Tool</h1>
+  <p>
+    适配 RDW2150：连接 <code>0xFFF0</code> 服务，启用 <code>0xFFF1</code> Notify，
+    通过 <code>0xFFF2</code> 写入 AT 命令和 YMODEM 数据。
+  </p>
+
+  <div class="hint">
+    本版按你的日志适配：<code>AT+RF=0</code> → 等 <code>OK</code> →
+    <code>AT+OTA=MAIN_MCU</code> → 等 <code>Main Menu</code> →
+    发送 ASCII <code>1</code> → 等 <code>Waiting for the file to be sent</code> →
+    发送 YMODEM。结尾会等待 EOT 后的 <code>C</code>，再发送 1 个空 header 包；
+    OTA 完成并重新出现 <code>Main Menu</code> 后，自动发送 ASCII <code>3</code> 跳转新程序。
+  </div>
+
+  <div class="grid" style="margin-top:16px;">
+    <section class="card">
+      <h2>1. BLE 连接</h2>
+
+      <label>设备名称前缀过滤，多个用英文逗号分隔；留空显示附近所有 BLE 设备</label>
+      <input id="namePrefix" value="AXENT,RDW" placeholder="例如：RDW,RDW2150,AXENT">
+
+      <div class="row">
+        <div>
+          <label>Service UUID</label>
+          <input id="serviceUuid" value="0000fff0-0000-1000-8000-00805f9b34fb">
+        </div>
+        <div>
+          <label>Notify Characteristic UUID</label>
+          <input id="notifyUuid" value="0000fff1-0000-1000-8000-00805f9b34fb">
+        </div>
+      </div>
+
+      <label>Write Characteristic UUID</label>
+      <input id="writeUuid" value="0000fff2-0000-1000-8000-00805f9b34fb">
+
+      <button id="btnConnect">连接 RDW2150</button>
+      <button id="btnDisconnect" class="secondary" disabled>断开</button>
+
+      <h2>2. RDW2150 OTA 握手</h2>
+      <div class="row">
+        <div>
+          <label>RF 关闭命令</label>
+          <input id="cmdRfOff" value="AT+RF=0">
+        </div>
+        <div>
+          <label>OTA 命令</label>
+          <input id="cmdOta" value="AT+OTA=MAIN_MCU">
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label>菜单选择字符</label>
+          <input id="cmdSelect" value="1">
+        </div>
+        <div>
+          <label>RF 恢复命令</label>
+          <input id="cmdRfOn" value="AT+RF=1">
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <label>AT 命令等待超时，ms</label>
+          <input id="atTimeoutMs" type="number" min="500" max="60000" value="15000">
+        </div>
+        <div>
+          <label>发送菜单选择后等待 Waiting，ms</label>
+          <input id="waitingTimeoutMs" type="number" min="500" max="60000" value="15000">
+        </div>
+      </div>
+
+      <label>
+        <input id="clearBeforeYmodem" type="checkbox" checked>
+        收到 Waiting 后清空 YMODEM 控制字节队列，避免菜单文本中的字符干扰 ACK/C 判断
+      </label>
+
+      <label>
+        <input id="skipInitialC" type="checkbox" checked>
+        收到 Waiting 后直接发送 YMODEM header，不等待初始 <code>C</code>
+      </label>
+
+      <div class="row">
+        <div>
+          <label>OTA 成功后跳转字符</label>
+          <input id="cmdJumpOta" value="3">
+        </div>
+        <div>
+          <label>OTA 完成后等待 Main Menu，ms</label>
+          <input id="jumpMenuTimeoutMs" type="number" min="1000" max="60000" value="12000">
+        </div>
+      </div>
+
+      <label>
+        <input id="jumpOtaAfterSuccess" type="checkbox" checked>
+        OTA 成功后等待主 MCU 重新打印 <code>Main Menu</code>，然后发送 ASCII <code>3</code> 执行新程序
+      </label>
+
+      <label>
+        <input id="sendRfOnAfterSuccess" type="checkbox" checked>
+        跳转新程序后再发送 <code>AT+RF=1</code> 恢复 RF
+      </label>
+
+      <button id="btnHandshake" class="secondary" disabled>只执行握手到 Waiting</button>
+    </section>
+
+    <section class="card">
+      <h2>3. YMODEM 发送</h2>
+
+      <label>选择 bin 文件</label>
+      <input id="file" type="file" accept=".bin,.ota,*/*">
+
+      <div class="row">
+        <div>
+          <label>BLE ATT 写入分片大小</label>
+          <input id="bleChunkSize" type="number" min="1" max="244" value="20">
+        </div>
+        <div>
+          <label>每个 BLE 分片后延时，ms</label>
+          <input id="chunkDelayMs" type="number" min="0" max="1000" value="0">
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <label>每包 ACK 超时，ms</label>
+          <input id="ackTimeoutMs" type="number" min="1000" max="60000" value="15000">
+        </div>
+        <div>
+          <label>EOT 后等待结束阶段 C，ms</label>
+          <input id="postEotCTimeoutMs" type="number" min="1000" max="60000" value="20000">
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <label>完成文本等待，ms</label>
+          <input id="successTextTimeoutMs" type="number" min="0" max="60000" value="8000">
+        </div>
+        <div>
+          <label>写入方式</label>
+          <select id="writeMode">
+            <option value="withResponse">Write With Response，稳妥</option>
+            <option value="withoutResponse">Write Without Response，较快但更容易丢包</option>
+          </select>
+        </div>
+      </div>
+
+      <label>
+        <input id="waitAckEveryPacket" type="checkbox" checked>
+        每个 1024 字节数据包都等待 ACK
+      </label>
+
+      <label>
+        <input id="padWith1A" type="checkbox" checked>
+        最后一个数据包不足 1024 字节时用 <code>0x1A</code> 填充
+      </label>
+
+      <button id="btnStart" disabled>一键：握手 + YMODEM</button>
+      <button id="btnYmodemOnly" class="secondary" disabled>只发送 YMODEM</button>
+      <button id="btnAbort" class="danger" disabled>发送 CAN 中止</button>
+
+      <h2>状态</h2>
+      <div id="status" class="status">尚未连接</div>
+      <progress id="progress" value="0" max="100"></progress>
+    </section>
+  </div>
+
+  <div class="grid" style="margin-top:16px;">
+    <section class="card">
+      <h2>RX 文本窗口</h2>
+      <button id="btnExportRxText" class="secondary">导出 RX 文本</button>
+      <button id="btnClearRx" class="secondary">清空 RX 文本</button>
+      <div id="rxText"></div>
+    </section>
+
+    <section class="card">
+      <h2>调试日志</h2>
+      <button id="btnExportAllLog" class="secondary">导出全部日志 TXT</button>
+      <button id="btnExportJsonLog" class="secondary">导出全部日志 JSON</button>
+      <button id="btnExportDebugLog" class="secondary">导出调试日志</button>
+      <button id="btnClearLog" class="secondary">清空日志</button>
+      <div id="log"></div>
+    </section>
+  </div>
+</main>
+
+<script>
+'use strict';
+
+/*
+ * RDW2150 BLE YMODEM OTA Tool
+ *
+ * 日志对齐点：
+ *   - AT+RF=0、AT+OTA=MAIN_MCU、'1' 都不追加 CR/LF。
+ *   - 主 MCU 在菜单选择后输出 "Waiting for the file to be sent ... (press 'a' to abort)"。
+ *   - 这个 BootLoader 不会在 Waiting 后立刻先发 C；它接受 header 后回 ACK+C。
+ *   - 最后一个数据包 ACK 后，发送 EOT；主 MCU ACK 后约 10 秒才再次发 C，
+ *     此时必须发送一个空 YMODEM header 包，才能得到 "Programming Completed Successfully!"。
+ */
+
+const SOH = 0x01;
+const STX = 0x02;
+const EOT = 0x04;
+const ACK = 0x06;
+const NAK = 0x15;
+const CAN = 0x18;
+const CRC_C = 0x43;
+
+let device = null;
+let server = null;
+let service = null;
+let notifyChar = null;
+let writeChar = null;
+let selectedFile = null;
+let selectedBytes = null;
+let rxQueue = [];
+let rxWaiters = [];
+let rxTextBuffer = '';
+let rxExportText = '';
+let logLines = [];
+let textWaiters = [];
+const EXPORT_TEXT_MAX = 8 * 1024 * 1024; // 避免浏览器内存无限增长，单项最多保留约 8MB
+let abortRequested = false;
+let sending = false;
+
+const $ = (id) => document.getElementById(id);
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+
+function log(msg, cls = '') {
+  const t = new Date().toLocaleTimeString();
+  const line = `[${t}] ${msg}`;
+  logLines.push(line);
+  if (logLines.length > 100000) logLines.shift();
+
+  const div = $('log');
+  if (cls) div.innerHTML += `<span class="${cls}">${escapeHtml(line)}</span>\n`;
+  else div.textContent += line + '\n';
+  div.scrollTop = div.scrollHeight;
+  console.log(line);
+}
+
+function appendExportText(oldText, addedText) {
+  let out = oldText + addedText;
+  if (out.length > EXPORT_TEXT_MAX) out = out.slice(-EXPORT_TEXT_MAX);
+  return out;
+}
+
+function makeExportTimestamp() {
+  const d = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+}
+
+function downloadTextFile(filename, text, mime = 'text/plain;charset=utf-8') {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function getElementValue(id, fallback = '') {
+  const el = $(id);
+  if (!el) return fallback;
+  if (el.type === 'checkbox') return !!el.checked;
+  return el.value ?? fallback;
+}
+
+function collectExportMeta() {
+  return {
+    exportedAt: new Date().toISOString(),
+    deviceName: device ? (device.name || '') : '',
+    connected: !!(device && device.gatt && device.gatt.connected),
+    selectedFile: selectedFile ? { name: selectedFile.name, size: selectedFile.size } : null,
+    settings: {
+      serviceUuid: getElementValue('serviceUuid'),
+      notifyUuid: getElementValue('notifyUuid'),
+      writeUuid: getElementValue('writeUuid'),
+      bleChunkSize: getElementValue('bleChunkSize'),
+      chunkDelayMs: getElementValue('chunkDelayMs'),
+      ackTimeoutMs: getElementValue('ackTimeoutMs'),
+      postEotCTimeoutMs: getElementValue('postEotCTimeoutMs'),
+      successTextTimeoutMs: getElementValue('successTextTimeoutMs'),
+      writeMode: getElementValue('writeMode'),
+      clearBeforeYmodem: getElementValue('clearBeforeYmodem', false),
+      skipInitialC: getElementValue('skipInitialC', false),
+      jumpOtaAfterSuccess: getElementValue('jumpOtaAfterSuccess', false),
+      cmdJumpOta: getElementValue('cmdJumpOta'),
+      jumpMenuTimeoutMs: getElementValue('jumpMenuTimeoutMs'),
+      waitAckEveryPacket: getElementValue('waitAckEveryPacket', false),
+      padWith1A: getElementValue('padWith1A', false),
+      sendRfOnAfterSuccess: getElementValue('sendRfOnAfterSuccess', false),
+      cmdRfOff: getElementValue('cmdRfOff'),
+      cmdOta: getElementValue('cmdOta'),
+      cmdSelect: getElementValue('cmdSelect'),
+      cmdRfOn: getElementValue('cmdRfOn')
+    }
+  };
+}
+
+function exportDebugLogTxt() {
+  const ts = makeExportTimestamp();
+  const meta = collectExportMeta();
+  const text =
+    `# RDW2150 BLE YMODEM OTA Debug Log\r\n` +
+    `# ExportedAt: ${meta.exportedAt}\r\n` +
+    `# Device: ${meta.deviceName}\r\n` +
+    `# File: ${meta.selectedFile ? meta.selectedFile.name + ' / ' + meta.selectedFile.size + ' bytes' : ''}\r\n` +
+    `\r\n` +
+    logLines.join('\r\n') + '\r\n';
+  downloadTextFile(`rdw2150_debug_log_${ts}.txt`, text);
+  log(`已导出调试日志：rdw2150_debug_log_${ts}.txt`, 'ok');
+}
+
+function exportRxTextTxt() {
+  const ts = makeExportTimestamp();
+  const meta = collectExportMeta();
+  const text =
+    `# RDW2150 BLE YMODEM OTA RX Text\r\n` +
+    `# ExportedAt: ${meta.exportedAt}\r\n` +
+    `# Device: ${meta.deviceName}\r\n` +
+    `# File: ${meta.selectedFile ? meta.selectedFile.name + ' / ' + meta.selectedFile.size + ' bytes' : ''}\r\n` +
+    `\r\n` +
+    (rxExportText || $('rxText').textContent || '') + '\r\n';
+  downloadTextFile(`rdw2150_rx_text_${ts}.txt`, text);
+  log(`已导出 RX 文本：rdw2150_rx_text_${ts}.txt`, 'ok');
+}
+
+function exportAllLogTxt() {
+  const ts = makeExportTimestamp();
+  const meta = collectExportMeta();
+  const text =
+    `# RDW2150 BLE YMODEM OTA Full Log\r\n` +
+    `# ExportedAt: ${meta.exportedAt}\r\n` +
+    `# Device: ${meta.deviceName}\r\n` +
+    `# Connected: ${meta.connected}\r\n` +
+    `# File: ${meta.selectedFile ? meta.selectedFile.name + ' / ' + meta.selectedFile.size + ' bytes' : ''}\r\n` +
+    `# Settings: ${JSON.stringify(meta.settings)}\r\n` +
+    `\r\n` +
+    `===== RX TEXT =====\r\n` +
+    (rxExportText || $('rxText').textContent || '') +
+    `\r\n\r\n===== DEBUG LOG =====\r\n` +
+    logLines.join('\r\n') + '\r\n';
+  downloadTextFile(`rdw2150_full_log_${ts}.txt`, text);
+  log(`已导出全部日志 TXT：rdw2150_full_log_${ts}.txt`, 'ok');
+}
+
+function exportAllLogJson() {
+  const ts = makeExportTimestamp();
+  const data = {
+    meta: collectExportMeta(),
+    rxText: rxExportText || $('rxText').textContent || '',
+    debugLog: logLines
+  };
+  downloadTextFile(
+    `rdw2150_full_log_${ts}.json`,
+    JSON.stringify(data, null, 2),
+    'application/json;charset=utf-8'
+  );
+  log(`已导出全部日志 JSON：rdw2150_full_log_${ts}.json`, 'ok');
+}
+
+function appendRxText(s) {
+  if (!s) return;
+  rxExportText = appendExportText(rxExportText, s);
+  rxTextBuffer += s;
+  if (rxTextBuffer.length > 8192) rxTextBuffer = rxTextBuffer.slice(-8192);
+
+  const div = $('rxText');
+  div.textContent += s;
+  if (div.textContent.length > 16000) div.textContent = div.textContent.slice(-16000);
+  div.scrollTop = div.scrollHeight;
+
+  const waiters = textWaiters.slice();
+  for (const w of waiters) tryResolveTextWaiter(w);
+}
+
+function setStatus(msg, cls = '') {
+  $('status').innerHTML = cls ? `<span class="${cls}">${escapeHtml(msg)}</span>` : escapeHtml(msg);
+}
+
+function setProgress(done, total) {
+  const v = total ? Math.floor(done * 100 / total) : 0;
+  $('progress').value = Math.max(0, Math.min(100, v));
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function normalizeUuid(s) {
+  s = String(s).trim().toLowerCase();
+  if (/^0x[0-9a-f]{4}$/.test(s)) s = s.slice(2);
+  if (/^[0-9a-f]{4}$/.test(s)) return `0000${s}-0000-1000-8000-00805f9b34fb`;
+  return s;
+}
+
+function bytesToHex(bytes, maxLen = 256) {
+  const a = Array.from(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
+  const shown = a.slice(0, maxLen).map(b => b.toString(16).padStart(2, '0')).join(' ');
+  return a.length > maxLen ? shown + ` ... (${a.length} bytes)` : shown;
+}
+
+function controlName(b) {
+  if (b === SOH) return 'SOH';
+  if (b === STX) return 'STX';
+  if (b === EOT) return 'EOT';
+  if (b === ACK) return 'ACK';
+  if (b === NAK) return 'NAK';
+  if (b === CAN) return 'CAN';
+  if (b === CRC_C) return 'C';
+  if (b >= 0x20 && b <= 0x7e) return `'${String.fromCharCode(b)}'`;
+  return '0x' + b.toString(16).padStart(2, '0');
+}
+
+function bytesToAsciiForText(bytes) {
+  let s = '';
+  for (const b of bytes) {
+    if (b === 0x0d) s += '\r';
+    else if (b === 0x0a) s += '\n';
+    else if (b === 0x09) s += '\t';
+    else if (b >= 0x20 && b <= 0x7e) s += String.fromCharCode(b);
+    else if (b === ACK || b === NAK || b === CRC_C || b === CAN || b === EOT) {
+      // 控制字节不塞进文本窗口，避免把 ACK/C 混进菜单文本。
+    } else {
+      s += '.';
+    }
+  }
+  return s;
+}
+
+function onNotification(event) {
+  const data = new Uint8Array(event.target.value.buffer);
+  for (const b of data) rxQueue.push(b);
+
+  const controls = Array.from(data).map(controlName).join(' ');
+  log(`RX Notify: ${bytesToHex(data)}    CTRL: ${controls}`);
+
+  appendRxText(bytesToAsciiForText(data));
+
+  const waiters = rxWaiters.slice();
+  for (const w of waiters) tryResolveByteWaiter(w);
+}
+
+function tryResolveByteWaiter(w) {
+  for (let i = 0; i < rxQueue.length; i++) {
+    const b = rxQueue[i];
+    if (b === CAN) {
+      rxQueue.splice(i, 1);
+      removeByteWaiter(w);
+      w.reject(new Error('收到 CAN，接收方请求中止'));
+      return true;
+    }
+    if (w.acceptSet.has(b)) {
+      rxQueue.splice(i, 1);
+      removeByteWaiter(w);
+      w.resolve(b);
+      return true;
+    }
+  }
+  return false;
+}
+
+function removeByteWaiter(w) {
+  const idx = rxWaiters.indexOf(w);
+  if (idx >= 0) rxWaiters.splice(idx, 1);
+  if (w.timer) clearTimeout(w.timer);
+}
+
+function waitForByte(accepted, timeoutMs, label) {
+  const acceptSet = new Set(accepted);
+  return new Promise((resolve, reject) => {
+    const waiter = { acceptSet, resolve, reject, timer: null };
+    if (tryResolveByteWaiter(waiter)) return;
+    waiter.timer = setTimeout(() => {
+      removeByteWaiter(waiter);
+      const names = Array.from(acceptSet).map(controlName).join('/');
+      reject(new Error(`等待 ${label || names} 超时，${timeoutMs} ms 内没有收到 ${names}`));
+    }, timeoutMs);
+    rxWaiters.push(waiter);
+  });
+}
+
+function findTextAfter(patterns, startAt = 0) {
+  const list = Array.isArray(patterns) ? patterns : [patterns];
+  const base = Math.max(0, Math.min(startAt || 0, rxTextBuffer.length));
+  const haystack = rxTextBuffer.slice(base);
+  for (const pattern of list) {
+    if (haystack.includes(pattern)) return pattern;
+  }
+  return '';
+}
+
+function tryResolveTextWaiter(w) {
+  const matched = findTextAfter(w.patterns, w.startAt || 0);
+  if (matched) {
+    removeTextWaiter(w);
+    w.resolve(matched);
+    return true;
+  }
+  return false;
+}
+
+function removeTextWaiter(w) {
+  const idx = textWaiters.indexOf(w);
+  if (idx >= 0) textWaiters.splice(idx, 1);
+  if (w.timer) clearTimeout(w.timer);
+}
+
+function waitForText(patterns, timeoutMs, label, startAt = 0) {
+  const list = Array.isArray(patterns) ? patterns : [patterns];
+  return new Promise((resolve, reject) => {
+    const waiter = { patterns: list, startAt, resolve, reject, timer: null };
+    if (tryResolveTextWaiter(waiter)) return;
+    waiter.timer = setTimeout(() => {
+      removeTextWaiter(waiter);
+      reject(new Error(`等待 ${label || list.join('/')} 超时，${timeoutMs} ms 内没有匹配文本`));
+    }, timeoutMs);
+    textWaiters.push(waiter);
+  });
+}
+
+function clearProtocolQueues() {
+  rxQueue = [];
+  rxWaiters = [];
+}
+
+function crc16Xmodem(bytes) {
+  let crc = 0x0000;
+  for (const b of bytes) {
+    crc ^= (b << 8);
+    for (let i = 0; i < 8; i++) {
+      crc = (crc & 0x8000) ? ((crc << 1) ^ 0x1021) : (crc << 1);
+      crc &= 0xffff;
+    }
+  }
+  return crc & 0xffff;
+}
+
+function makePacket(blockNo, payload, packetSize) {
+  const pkt = new Uint8Array(3 + packetSize + 2);
+  pkt[0] = packetSize === 128 ? SOH : STX;
+  pkt[1] = blockNo & 0xff;
+  pkt[2] = 0xff - (blockNo & 0xff);
+  pkt.set(payload, 3);
+  const crc = crc16Xmodem(pkt.slice(3, 3 + packetSize));
+  pkt[3 + packetSize] = (crc >> 8) & 0xff;
+  pkt[3 + packetSize + 1] = crc & 0xff;
+  return pkt;
+}
+
+function makeHeaderPacket(fileName, fileSize) {
+  const payload = new Uint8Array(128);
+  const enc = new TextEncoder();
+  const nameBytes = enc.encode(fileName);
+  const sizeBytes = enc.encode(String(fileSize));
+  payload.set(nameBytes.slice(0, 100), 0);
+  let p = Math.min(nameBytes.length, 100);
+  payload[p++] = 0x00;
+  payload.set(sizeBytes.slice(0, 20), p);
+  return makePacket(0, payload, 128);
+}
+
+function makeEmptyHeaderPacket() {
+  return makePacket(0, new Uint8Array(128), 128);
+}
+
+function makeDataPacket(blockNo, fileBytes, offset) {
+  const payload = new Uint8Array(1024);
+  payload.fill($('padWith1A').checked ? 0x1a : 0xff);
+  payload.set(fileBytes.slice(offset, Math.min(offset + 1024, fileBytes.length)), 0);
+  return makePacket(blockNo, payload, 1024);
+}
+
+async function bleWriteRaw(bytes) {
+  if (!writeChar) throw new Error('尚未获取 FFF2 写特征');
+  const chunkSize = Math.max(1, Math.min(244, parseInt($('bleChunkSize').value || '20', 10)));
+  const delayMs = Math.max(0, parseInt($('chunkDelayMs').value || '0', 10));
+  const mode = $('writeMode').value;
+
+  for (let off = 0; off < bytes.length; off += chunkSize) {
+    if (abortRequested) throw new Error('用户中止');
+    const chunk = bytes.slice(off, off + chunkSize);
+
+    if (mode === 'withoutResponse' && typeof writeChar.writeValueWithoutResponse === 'function') {
+      await writeChar.writeValueWithoutResponse(chunk);
+    } else if (typeof writeChar.writeValueWithResponse === 'function') {
+      await writeChar.writeValueWithResponse(chunk);
+    } else {
+      await writeChar.writeValue(chunk);
+    }
+
+    if (delayMs > 0) await sleep(delayMs);
+  }
+}
+
+async function sendAsciiNoNewline(s, label) {
+  const bytes = new TextEncoder().encode(s);
+  log(`TX ${label || 'ASCII'}: ${bytesToHex(bytes)}    "${s}"`);
+  await bleWriteRaw(bytes);
+}
+
+async function connectBle() {
+  if (!('bluetooth' in navigator)) {
+    throw new Error('当前浏览器不支持 Web Bluetooth。请使用 Windows/Android 上的 Chrome 或 Edge。');
+  }
+
+  const serviceUuid = normalizeUuid($('serviceUuid').value);
+  const notifyUuid = normalizeUuid($('notifyUuid').value);
+  const writeUuid = normalizeUuid($('writeUuid').value);
+
+  const prefixes = $('namePrefix').value.split(',').map(s => s.trim()).filter(Boolean);
+  const options = { optionalServices: [serviceUuid] };
+  if (prefixes.length) options.filters = prefixes.map(namePrefix => ({ namePrefix }));
+  else options.acceptAllDevices = true;
+
+  log('开始扫描 BLE 设备...');
+  device = await navigator.bluetooth.requestDevice(options);
+  device.addEventListener('gattserverdisconnected', () => {
+    setStatus('BLE 已断开', 'warn');
+    log('BLE 已断开', 'warn');
+    updateButtons();
+  });
+
+  log(`连接到设备：${device.name || '(无名称)'}`);
+  server = await device.gatt.connect();
+
+  service = await server.getPrimaryService(serviceUuid);
+  log(`找到服务：${serviceUuid}`);
+
+  notifyChar = await service.getCharacteristic(notifyUuid);
+  notifyChar.addEventListener('characteristicvaluechanged', onNotification);
+  await notifyChar.startNotifications();
+  log(`已启用 Notify：${notifyUuid}`, 'ok');
+
+  writeChar = await service.getCharacteristic(writeUuid);
+  log(`找到写特征：${writeUuid}`, 'ok');
+
+  clearProtocolQueues();
+  rxTextBuffer = '';
+  $('rxText').textContent = '';
+  setStatus(`已连接：${device.name || '(无名称)'}，FFF1 Notify 已启用`, 'ok');
+  updateButtons();
+}
+
+function disconnectBle() {
+  if (device && device.gatt && device.gatt.connected) device.gatt.disconnect();
+  server = service = notifyChar = writeChar = null;
+  setStatus('已断开');
+  updateButtons();
+}
+
+function updateButtons() {
+  const connected = !!(device && device.gatt && device.gatt.connected && writeChar);
+  $('btnDisconnect').disabled = !connected;
+  $('btnHandshake').disabled = !connected || sending;
+  $('btnStart').disabled = !connected || !selectedBytes || sending;
+  $('btnYmodemOnly').disabled = !connected || !selectedBytes || sending;
+  $('btnAbort').disabled = !connected || !sending;
+}
+
+async function rdwHandshakeToWaiting() {
+  if (!writeChar) throw new Error('尚未连接 RDW2150');
+
+  const atTimeoutMs = Math.max(500, parseInt($('atTimeoutMs').value || '15000', 10));
+  const waitingTimeoutMs = Math.max(500, parseInt($('waitingTimeoutMs').value || '15000', 10));
+
+  setStatus('发送 AT+RF=0，等待 OK...');
+  await sendAsciiNoNewline($('cmdRfOff').value, 'RF OFF');
+  await waitForText(['OK'], atTimeoutMs, 'AT+RF=0 的 OK');
+  log('AT+RF=0 收到 OK', 'ok');
+
+  setStatus('发送 AT+OTA=MAIN_MCU，等待主 MCU 菜单...');
+  await sendAsciiNoNewline($('cmdOta').value, 'OTA CMD');
+  await waitForText(['Main Menu', 'Download OTA'], atTimeoutMs, 'Main Menu / Download OTA');
+  log('收到主 MCU Main Menu / Download OTA', 'ok');
+
+  setStatus('发送菜单选择字符，等待 Waiting for...');
+  await sendAsciiNoNewline($('cmdSelect').value, 'MENU SELECT');
+  await waitForText(['Waiting for the file to be sent', 'Waiting for'], waitingTimeoutMs, 'Waiting for the file to be sent');
+  log('收到 Waiting for，主 MCU 已进入 YMODEM 接收', 'ok');
+
+  if ($('clearBeforeYmodem').checked) {
+    clearProtocolQueues();
+    log('已清空 YMODEM 控制字节队列');
+  }
+}
+
+async function sendYmodem({ useHandshake = false } = {}) {
+  if (!selectedBytes || !selectedFile) throw new Error('尚未选择文件');
+  if (!writeChar) throw new Error('尚未连接 RDW2150');
+
+  abortRequested = false;
+  sending = true;
+  updateButtons();
+
+  const ackTimeoutMs = Math.max(1000, parseInt($('ackTimeoutMs').value || '15000', 10));
+  const postEotCTimeoutMs = Math.max(1000, parseInt($('postEotCTimeoutMs').value || '20000', 10));
+  const successTextTimeoutMs = Math.max(0, parseInt($('successTextTimeoutMs').value || '8000', 10));
+  const jumpMenuTimeoutMs = Math.max(1000, parseInt(getElementValue('jumpMenuTimeoutMs', '12000') || '12000', 10));
+  const waitAckEveryPacket = $('waitAckEveryPacket').checked;
+  const fileName = selectedFile.name.replace(/[^\x20-\x7e]/g, '_');
+  const totalBlocks = Math.ceil(selectedBytes.length / 1024);
+
+  try {
+    log(`准备发送：${fileName}, ${selectedBytes.length} bytes, 数据包=${totalBlocks}`);
+    setProgress(0, totalBlocks + 4);
+
+    if (useHandshake) await rdwHandshakeToWaiting();
+
+    if (!$('skipInitialC').checked) {
+      setStatus('等待接收方发送初始 C...');
+      const c0 = await waitForByte([CRC_C], ackTimeoutMs, '初始 C');
+      log(`收到 ${controlName(c0)}，开始发送 header 包`, 'ok');
+    } else {
+      log('根据 RDW2150 日志，收到 Waiting 后直接发送 header，不等待初始 C', 'warn');
+    }
+
+    const header = makeHeaderPacket(fileName, selectedBytes.length);
+    setStatus('发送 YMODEM header 包...');
+    log(`TX Header: ${bytesToHex(header, 96)}`);
+    await bleWriteRaw(header);
+
+    const ack0 = await waitForByte([ACK], ackTimeoutMs, 'header ACK');
+    log(`Header 收到 ${controlName(ack0)}`, 'ok');
+
+    const c1 = await waitForByte([CRC_C], ackTimeoutMs, 'header 后的 C');
+    log(`Header 后收到 ${controlName(c1)}，开始发送数据包`, 'ok');
+    setProgress(1, totalBlocks + 4);
+
+    for (let block = 1; block <= totalBlocks; block++) {
+      if (abortRequested) throw new Error('用户中止');
+      const offset = (block - 1) * 1024;
+      const pkt = makeDataPacket(block, selectedBytes, offset);
+      setStatus(`发送数据包 ${block}/${totalBlocks}，offset=0x${offset.toString(16)}`);
+      await bleWriteRaw(pkt);
+
+      if (waitAckEveryPacket) {
+        const r = await waitForByte([ACK, NAK], ackTimeoutMs, `数据包 ${block} ACK/NAK`);
+        if (r === NAK) {
+          log(`数据包 ${block} 收到 NAK，重发一次`, 'warn');
+          await bleWriteRaw(pkt);
+          const r2 = await waitForByte([ACK], ackTimeoutMs, `数据包 ${block} 重发 ACK`);
+          log(`数据包 ${block} 重发后收到 ${controlName(r2)}`, 'ok');
+        } else if (block % 8 === 0 || block === totalBlocks) {
+          log(`数据包 ${block}/${totalBlocks} ACK`, 'ok');
+        }
+      }
+
+      setProgress(block + 1, totalBlocks + 4);
+    }
+
+    setStatus('发送 EOT...');
+    log('TX EOT');
+    await bleWriteRaw(new Uint8Array([EOT]));
+
+    let eotReply = await waitForByte([ACK, NAK], ackTimeoutMs, 'EOT ACK/NAK');
+    if (eotReply === NAK) {
+      log('EOT 收到 NAK，按标准流程再次发送 EOT', 'warn');
+      await bleWriteRaw(new Uint8Array([EOT]));
+      eotReply = await waitForByte([ACK], ackTimeoutMs, '第二次 EOT ACK');
+    }
+    log(`EOT 收到 ${controlName(eotReply)}`, 'ok');
+    setProgress(totalBlocks + 2, totalBlocks + 4);
+
+    setStatus(`等待 EOT 后的 C，超时 ${postEotCTimeoutMs} ms...`);
+    const c2 = await waitForByte([CRC_C], postEotCTimeoutMs, 'EOT 后结束阶段 C');
+    log(`EOT 后收到 ${controlName(c2)}，发送 1 个空 header 包`, 'ok');
+
+    const emptyHeader = makeEmptyHeaderPacket();
+    log(`TX Empty Header: ${bytesToHex(emptyHeader, 32)} ...`);
+    await bleWriteRaw(emptyHeader);
+
+    const ackEnd = await waitForByte([ACK], ackTimeoutMs, '空 header ACK');
+    log(`空 header 收到 ${controlName(ackEnd)}`, 'ok');
+    setProgress(totalBlocks + 3, totalBlocks + 4);
+
+    let successMatched = '';
+    let successIndex = -1;
+    if (successTextTimeoutMs > 0) {
+      try {
+        // 从当前时刻开始等待完成提示，避免匹配到升级前残留的 Main Menu。
+        const successStartAt = rxTextBuffer.length;
+        successMatched = await waitForText(
+          ['Programming Completed Successfully', 'Completed Successfully'],
+          successTextTimeoutMs,
+          '完成提示',
+          successStartAt
+        );
+        successIndex = rxTextBuffer.lastIndexOf(successMatched);
+        log(`收到完成提示：${successMatched}`, 'ok');
+      } catch (e) {
+        log(`空 header 已 ACK，但未在 ${successTextTimeoutMs} ms 内匹配到完成文本：${e.message}`, 'warn');
+      }
+    }
+
+    if (getElementValue('jumpOtaAfterSuccess', false)) {
+      const jumpChar = String(getElementValue('cmdJumpOta', '3') || '3').slice(0, 1);
+      const menuPatterns = ['=== Main Menu ===', '3.Jump OTA', 'Jump OTA'];
+      setStatus('等待 OTA 完成后的 Main Menu，然后发送 Jump OTA...');
+
+      let menuMatched = '';
+      if (successIndex >= 0) {
+        // 如果完成提示和 Main Menu 在同一个 Notify 中到达，这里也能直接识别。
+        menuMatched = findTextAfter(menuPatterns, successIndex);
+      }
+      if (!menuMatched) {
+        menuMatched = await waitForText(menuPatterns, jumpMenuTimeoutMs, 'OTA 完成后的 Main Menu / Jump OTA', rxTextBuffer.length);
+      }
+
+      log(`收到 OTA 完成后的菜单：${menuMatched}`, 'ok');
+      await sleep(120);
+      await sendAsciiNoNewline(jumpChar, 'JUMP OTA');
+      log(`已发送 OTA 跳转字符：${jumpChar}，用于让主 MCU 执行新程序`, 'ok');
+      await sleep(1000);
+    }
+
+    if ($('sendRfOnAfterSuccess').checked && $('cmdRfOn').value.trim()) {
+      await sendAsciiNoNewline($('cmdRfOn').value.trim(), 'RF ON');
+      log('已发送 RF 恢复命令', 'ok');
+    }
+
+    setProgress(100, 100);
+    setStatus('YMODEM 发送完成，已执行后续跳转流程', 'ok');
+    log('YMODEM 发送完成，已执行后续跳转流程', 'ok');
+  } finally {
+    sending = false;
+    updateButtons();
+  }
+}
+
+async function sendCancel() {
+  abortRequested = true;
+  if (writeChar) {
+    const can = new Uint8Array([CAN, CAN, CAN, CAN, CAN, CAN, CAN, CAN]);
+    log('TX CAN x8，中止传输', 'warn');
+    await bleWriteRaw(can);
+  }
+}
+
+$('btnConnect').addEventListener('click', async () => {
+  try {
+    await connectBle();
+  } catch (e) {
+    setStatus('连接失败：' + e.message, 'dangerText');
+    log('连接失败：' + (e.stack || e.message), 'dangerText');
+    updateButtons();
+  }
+});
+
+$('btnDisconnect').addEventListener('click', disconnectBle);
+
+$('btnHandshake').addEventListener('click', async () => {
+  try {
+    sending = true;
+    updateButtons();
+    await rdwHandshakeToWaiting();
+    setStatus('握手完成，已到 Waiting for，可开始 YMODEM', 'ok');
+  } catch (e) {
+    setStatus('握手失败：' + e.message, 'dangerText');
+    log('握手失败：' + (e.stack || e.message), 'dangerText');
+  } finally {
+    sending = false;
+    updateButtons();
+  }
+});
+
+$('btnStart').addEventListener('click', async () => {
+  try {
+    await sendYmodem({ useHandshake: true });
+  } catch (e) {
+    setStatus('发送失败：' + e.message, 'dangerText');
+    log('发送失败：' + (e.stack || e.message), 'dangerText');
+    sending = false;
+    updateButtons();
+  }
+});
+
+$('btnYmodemOnly').addEventListener('click', async () => {
+  try {
+    await sendYmodem({ useHandshake: false });
+  } catch (e) {
+    setStatus('发送失败：' + e.message, 'dangerText');
+    log('发送失败：' + (e.stack || e.message), 'dangerText');
+    sending = false;
+    updateButtons();
+  }
+});
+
+$('btnAbort').addEventListener('click', async () => {
+  try {
+    await sendCancel();
+  } catch (e) {
+    log('发送 CAN 失败：' + (e.stack || e.message), 'dangerText');
+  }
+});
+
+$('btnExportAllLog').addEventListener('click', exportAllLogTxt);
+$('btnExportJsonLog').addEventListener('click', exportAllLogJson);
+$('btnExportDebugLog').addEventListener('click', exportDebugLogTxt);
+$('btnExportRxText').addEventListener('click', exportRxTextTxt);
+$('btnClearLog').addEventListener('click', () => { $('log').textContent = ''; logLines = []; });
+$('btnClearRx').addEventListener('click', () => { $('rxText').textContent = ''; rxTextBuffer = ''; rxExportText = ''; });
+
+$('file').addEventListener('change', async (ev) => {
+  const f = ev.target.files && ev.target.files[0];
+  selectedFile = f || null;
+  selectedBytes = null;
+
+  if (!f) {
+    log('未选择文件');
+    updateButtons();
+    return;
+  }
+
+  selectedBytes = new Uint8Array(await f.arrayBuffer());
+  const totalBlocks = Math.ceil(selectedBytes.length / 1024);
+  log(`已选择文件：${f.name}, ${selectedBytes.length} bytes, YMODEM 数据包=${totalBlocks}, 最后一包有效字节=${selectedBytes.length % 1024 || 1024}`);
+  setStatus(`已选择文件：${f.name}, ${selectedBytes.length} bytes`);
+  setProgress(0, 100);
+  updateButtons();
+});
+
+updateButtons();
+</script>
+</body>
+</html>
