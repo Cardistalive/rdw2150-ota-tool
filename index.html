@@ -702,15 +702,18 @@ function makeDataPacket(blockNo, fileBytes, offset) {
   return makePacket(blockNo, payload, 1024);
 }
 
-async function bleWriteRaw(bytes) {
+async function bleWriteRaw(bytes, options = {}) {
   if (!writeChar) throw new Error('尚未获取 FFF2 写特征');
   const chunkSize = Math.max(1, Math.min(244, parseInt($('bleChunkSize').value || '20', 10)));
-  const delayMs = Math.max(0, parseInt($('chunkDelayMs').value || '0', 10));
+  const useChunkDelay = !!options.useChunkDelay;
+  const writeLabel = options.label ? ` ${options.label}` : '';
+  const configuredDelayMs = Math.max(0, parseInt($('chunkDelayMs').value || '0', 10));
+  const delayMs = useChunkDelay ? configuredDelayMs : 0;
   const mode = $('writeMode').value;
   const totalChunks = Math.ceil(bytes.length / chunkSize);
   const traceChunks = bytes.length <= 133;
 
-  log(`BLE Write: len=${bytes.length}, chunk=${chunkSize}, chunks=${totalChunks}, mode=${mode}, delay=${delayMs}ms`);
+  log(`BLE Write${writeLabel}: len=${bytes.length}, chunk=${chunkSize}, chunks=${totalChunks}, mode=${mode}, delay=${delayMs}ms${useChunkDelay ? '' : ' (off)'}`);
 
   for (let off = 0, idx = 1; off < bytes.length; off += chunkSize, idx++) {
     if (abortRequested) throw new Error('用户中止');
@@ -725,14 +728,18 @@ async function bleWriteRaw(bytes) {
       await writeChar.writeValue(chunk);
     }
 
-    if (delayMs > 0) await sleep(delayMs);
+    if (delayMs > 0 && idx < totalChunks) await sleep(delayMs);
   }
+}
+
+async function bleWriteYmodemPacket(bytes, label) {
+  await bleWriteRaw(bytes, { useChunkDelay: true, label });
 }
 
 async function sendAsciiNoNewline(s, label) {
   const bytes = new TextEncoder().encode(s);
   log(`TX ${label || 'ASCII'}: ${bytesToHex(bytes)}    "${s}"`);
-  await bleWriteRaw(bytes);
+  await bleWriteRaw(bytes, { label: label || 'ASCII' });
 }
 
 async function connectBle() {
@@ -854,10 +861,15 @@ async function sendYmodem({ useHandshake = false } = {}) {
       log('根据 RDW2150 日志，收到 Waiting 后直接发送 header，不等待初始 C', 'warn');
     }
 
+    const dataPackets = new Array(totalBlocks);
+    for (let block = 1; block <= totalBlocks; block++) {
+      dataPackets[block - 1] = makeDataPacket(block, selectedBytes, (block - 1) * 1024);
+    }
+
     const header = makeHeaderPacket(fileName, selectedBytes.length);
     setStatus('发送 YMODEM header 包...');
     log(`TX Header: ${bytesToHex(header, 96)}`);
-    await bleWriteRaw(header);
+    await bleWriteYmodemPacket(header, 'YMODEM header');
 
     const ack0 = await waitForByte([ACK], ackTimeoutMs, 'header ACK');
     log(`Header 收到 ${controlName(ack0)}`, 'ok');
@@ -866,22 +878,39 @@ async function sendYmodem({ useHandshake = false } = {}) {
     log(`Header 后收到 ${controlName(c1)}，开始发送数据包`, 'ok');
     setProgress(1, totalBlocks + 4);
 
+    let lastDataAckAt = 0;
+    let lastDataAckBlock = 0;
     for (let block = 1; block <= totalBlocks; block++) {
       if (abortRequested) throw new Error('用户中止');
       const offset = (block - 1) * 1024;
-      const pkt = makeDataPacket(block, selectedBytes, offset);
-      setStatus(`发送数据包 ${block}/${totalBlocks}，offset=0x${offset.toString(16)}`);
-      await bleWriteRaw(pkt);
+      const pkt = dataPackets[block - 1];
+      if (block === 1 || block === totalBlocks || block % 8 === 0) {
+        setStatus(`发送数据包 ${block}/${totalBlocks}，offset=0x${offset.toString(16)}`);
+      }
+      if (lastDataAckAt && (block <= 4 || block === totalBlocks || block % 8 === 0)) {
+        log(`DATA ${block} JS gap after ACK ${lastDataAckBlock}: ${(performance.now() - lastDataAckAt).toFixed(1)} ms`);
+      }
+      const dataWriteStartedAt = performance.now();
+      await bleWriteYmodemPacket(pkt, `YMODEM data ${block}`);
+      if (block <= 4 || block === totalBlocks || block % 8 === 0) {
+        log(`DATA ${block} BLE write queued in ${(performance.now() - dataWriteStartedAt).toFixed(1)} ms`);
+      }
 
       if (waitAckEveryPacket) {
         const r = await waitForByte([ACK, NAK], ackTimeoutMs, `数据包 ${block} ACK/NAK`);
         if (r === NAK) {
           log(`数据包 ${block} 收到 NAK，重发一次`, 'warn');
-          await bleWriteRaw(pkt);
+          await bleWriteYmodemPacket(pkt, `YMODEM data ${block} retry`);
           const r2 = await waitForByte([ACK], ackTimeoutMs, `数据包 ${block} 重发 ACK`);
+          lastDataAckAt = performance.now();
+          lastDataAckBlock = block;
           log(`数据包 ${block} 重发后收到 ${controlName(r2)}`, 'ok');
-        } else if (block % 8 === 0 || block === totalBlocks) {
-          log(`数据包 ${block}/${totalBlocks} ACK`, 'ok');
+        } else {
+          lastDataAckAt = performance.now();
+          lastDataAckBlock = block;
+          if (block % 8 === 0 || block === totalBlocks) {
+            log(`数据包 ${block}/${totalBlocks} ACK`, 'ok');
+          }
         }
       }
 
@@ -890,12 +919,12 @@ async function sendYmodem({ useHandshake = false } = {}) {
 
     setStatus('发送 EOT...');
     log('TX EOT');
-    await bleWriteRaw(new Uint8Array([EOT]));
+    await bleWriteRaw(new Uint8Array([EOT]), { label: 'EOT' });
 
     let eotReply = await waitForByte([ACK, NAK], ackTimeoutMs, 'EOT ACK/NAK');
     if (eotReply === NAK) {
       log('EOT 收到 NAK，按标准流程再次发送 EOT', 'warn');
-      await bleWriteRaw(new Uint8Array([EOT]));
+      await bleWriteRaw(new Uint8Array([EOT]), { label: 'EOT retry' });
       eotReply = await waitForByte([ACK], ackTimeoutMs, '第二次 EOT ACK');
     }
     log(`EOT 收到 ${controlName(eotReply)}`, 'ok');
@@ -907,7 +936,8 @@ async function sendYmodem({ useHandshake = false } = {}) {
 
     const emptyHeader = makeEmptyHeaderPacket();
     log(`TX Empty Header: ${bytesToHex(emptyHeader, 32)} ...`);
-    await bleWriteRaw(emptyHeader);
+    const finishTextStartAt = markRxText('before empty header completion');
+    await bleWriteRaw(emptyHeader, { label: 'YMODEM empty header' });
 
     const ackEnd = await waitForByte([ACK], ackTimeoutMs, '空 header ACK');
     log(`空 header 收到 ${controlName(ackEnd)}`, 'ok');
@@ -917,15 +947,17 @@ async function sendYmodem({ useHandshake = false } = {}) {
     let successIndex = -1;
     if (successTextTimeoutMs > 0) {
       try {
-        // 从当前时刻开始等待完成提示，避免匹配到升级前残留的 Main Menu。
-        const successStartAt = rxTextBuffer.length;
-        successMatched = await waitForText(
-          ['Programming Completed Successfully', 'Completed Successfully'],
-          successTextTimeoutMs,
-          '完成提示',
-          successStartAt
-        );
-        successIndex = rxTextBuffer.lastIndexOf(successMatched);
+        const successPatterns = ['Programming Completed Successfully', 'Completed Successfully'];
+        successMatched = findTextAfter(successPatterns, finishTextStartAt);
+        if (!successMatched) {
+          successMatched = await waitForText(
+            successPatterns,
+            successTextTimeoutMs,
+            '完成提示',
+            finishTextStartAt
+          );
+        }
+        successIndex = rxTextBuffer.indexOf(successMatched, finishTextStartAt);
         log(`收到完成提示：${successMatched}`, 'ok');
       } catch (e) {
         log(`空 header 已 ACK，但未在 ${successTextTimeoutMs} ms 内匹配到完成文本：${e.message}`, 'warn');
@@ -937,13 +969,10 @@ async function sendYmodem({ useHandshake = false } = {}) {
       const menuPatterns = ['=== Main Menu ===', '3.Jump OTA', 'Jump OTA'];
       setStatus('等待 OTA 完成后的 Main Menu，然后发送 Jump OTA...');
 
-      let menuMatched = '';
-      if (successIndex >= 0) {
-        // 如果完成提示和 Main Menu 在同一个 Notify 中到达，这里也能直接识别。
-        menuMatched = findTextAfter(menuPatterns, successIndex);
-      }
+      const menuSearchStart = successIndex >= 0 ? successIndex : finishTextStartAt;
+      let menuMatched = findTextAfter(menuPatterns, menuSearchStart);
       if (!menuMatched) {
-        menuMatched = await waitForText(menuPatterns, jumpMenuTimeoutMs, 'OTA 完成后的 Main Menu / Jump OTA', rxTextBuffer.length);
+        menuMatched = await waitForText(menuPatterns, jumpMenuTimeoutMs, 'OTA 完成后的 Main Menu / Jump OTA', menuSearchStart);
       }
 
       log(`收到 OTA 完成后的菜单：${menuMatched}`, 'ok');
@@ -972,7 +1001,7 @@ async function sendCancel() {
   if (writeChar) {
     const can = new Uint8Array([CAN, CAN, CAN, CAN, CAN, CAN, CAN, CAN]);
     log('TX CAN x8，中止传输', 'warn');
-    await bleWriteRaw(can);
+    await bleWriteRaw(can, { label: 'CAN' });
   }
 }
 
