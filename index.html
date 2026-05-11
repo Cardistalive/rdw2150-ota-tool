@@ -219,10 +219,11 @@
 
       <label>选择 bin 文件</label>
       <input id="file" type="file" accept=".bin,.ota,*/*">
+      <div id="fileState" class="status" style="margin-top:8px;">未选择文件</div>
 
       <div class="row">
         <div>
-          <label>BLE ATT 写入分片大小</label>
+          <label>BLE ATT 写入分片大小(1~244)</label>
           <input id="bleChunkSize" type="number" min="1" max="244" value="20">
         </div>
         <div>
@@ -250,8 +251,8 @@
         <div>
           <label>写入方式</label>
           <select id="writeMode">
-            <option value="withResponse">Write With Response，稳妥</option>
             <option value="withoutResponse">Write Without Response，较快但更容易丢包</option>
+            <option value="withResponse">Write With Response，稳妥</option>
           </select>
         </div>
       </div>
@@ -333,6 +334,7 @@ let textWaiters = [];
 const EXPORT_TEXT_MAX = 8 * 1024 * 1024; // 避免浏览器内存无限增长，单项最多保留约 8MB
 let abortRequested = false;
 let sending = false;
+let fileReadInProgress = null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -497,6 +499,71 @@ function appendRxText(s) {
 
 function setStatus(msg, cls = '') {
   $('status').innerHTML = cls ? `<span class="${cls}">${escapeHtml(msg)}</span>` : escapeHtml(msg);
+}
+
+function setFileState(msg, cls = '') {
+  const el = $('fileState');
+  if (!el) return;
+  el.innerHTML = cls ? `<span class="${cls}">${escapeHtml(msg)}</span>` : escapeHtml(msg);
+}
+
+function sameFileMeta(a, b) {
+  return !!(a && b &&
+    a.name === b.name &&
+    a.size === b.size &&
+    a.lastModified === b.lastModified);
+}
+
+async function loadSelectedFileFromInput(reason = '文件选择') {
+  const input = $('file');
+  const f = input && input.files && input.files[0];
+
+  if (!f) {
+    selectedFile = null;
+    selectedBytes = null;
+    fileReadInProgress = null;
+    if (input) input.value = '';
+    setFileState('未选择文件；如果这里曾显示文件名但按钮仍是灰色，请重新选择 bin 文件。', 'warn');
+    updateButtons();
+    return false;
+  }
+
+  if (selectedBytes && sameFileMeta(selectedFile, f)) {
+    setFileState(`已选择文件：${f.name}, ${selectedBytes.length} bytes`, 'ok');
+    updateButtons();
+    return true;
+  }
+
+  if (fileReadInProgress) return fileReadInProgress;
+
+  fileReadInProgress = (async () => {
+    selectedFile = f;
+    selectedBytes = null;
+    setFileState(`正在读取文件：${f.name}...`, 'warn');
+    updateButtons();
+
+    try {
+      const bytes = new Uint8Array(await f.arrayBuffer());
+      selectedFile = f;
+      selectedBytes = bytes;
+      const totalBlocks = Math.ceil(selectedBytes.length / 1024);
+      log(`${reason}：${f.name}, ${selectedBytes.length} bytes, YMODEM 数据包=${totalBlocks}, 最后一包有效字节=${selectedBytes.length % 1024 || 1024}`);
+      setFileState(`已选择文件：${f.name}, ${selectedBytes.length} bytes`, 'ok');
+      setProgress(0, 100);
+      return true;
+    } catch (e) {
+      selectedFile = null;
+      selectedBytes = null;
+      setFileState('读取文件失败，请重新选择 bin 文件：' + e.message, 'dangerText');
+      log('读取文件失败：' + (e.stack || e.message), 'dangerText');
+      return false;
+    } finally {
+      fileReadInProgress = null;
+      updateButtons();
+    }
+  })();
+
+  return fileReadInProgress;
 }
 
 function setProgress(done, total) {
@@ -782,6 +849,7 @@ async function connectBle() {
   rxTextBuffer = '';
   $('rxText').textContent = '';
   setStatus(`已连接：${device.name || '(无名称)'}，FFF1 Notify 已启用`, 'ok');
+  await loadSelectedFileFromInput('连接后恢复文件');
   updateButtons();
 }
 
@@ -794,11 +862,15 @@ function disconnectBle() {
 
 function updateButtons() {
   const connected = !!(device && device.gatt && device.gatt.connected && writeChar);
+  const hasFile = !!(selectedFile && selectedBytes);
   $('btnDisconnect').disabled = !connected;
   $('btnHandshake').disabled = !connected || sending;
-  $('btnStart').disabled = !connected || !selectedBytes || sending;
-  $('btnYmodemOnly').disabled = !connected || !selectedBytes || sending;
-  $('btnAbort').disabled = !connected || !sending;
+  $('btnStart').disabled = !connected || !hasFile || sending;
+  $('btnYmodemOnly').disabled = !connected || !hasFile || sending;
+  $('btnAbort').disabled = !connected;
+  $('btnStart').title = hasFile ? '' : '请重新选择 bin 文件；手机 Chrome 断线/页面恢复后可能只保留文件名显示，JS 已无法读取文件内容。';
+  $('btnYmodemOnly').title = $('btnStart').title;
+  $('btnAbort').title = connected ? '向设备发送 CAN x8；可用于 Waiting 或传输异常时中止 YMODEM。' : '';
 }
 
 async function rdwHandshakeToWaiting() {
@@ -832,6 +904,7 @@ async function rdwHandshakeToWaiting() {
 }
 
 async function sendYmodem({ useHandshake = false } = {}) {
+  if (!selectedBytes || !selectedFile) await loadSelectedFileFromInput('发送前恢复文件');
   if (!selectedBytes || !selectedFile) throw new Error('尚未选择文件');
   if (!writeChar) throw new Error('尚未连接 RDW2150');
 
@@ -1069,23 +1142,12 @@ $('btnExportRxText').addEventListener('click', exportRxTextTxt);
 $('btnClearLog').addEventListener('click', () => { $('log').textContent = ''; logLines = []; });
 $('btnClearRx').addEventListener('click', () => { $('rxText').textContent = ''; rxTextBuffer = ''; rxExportText = ''; });
 
-$('file').addEventListener('change', async (ev) => {
-  const f = ev.target.files && ev.target.files[0];
-  selectedFile = f || null;
-  selectedBytes = null;
+$('file').addEventListener('change', async () => {
+  await loadSelectedFileFromInput('已选择文件');
+});
 
-  if (!f) {
-    log('未选择文件');
-    updateButtons();
-    return;
-  }
-
-  selectedBytes = new Uint8Array(await f.arrayBuffer());
-  const totalBlocks = Math.ceil(selectedBytes.length / 1024);
-  log(`已选择文件：${f.name}, ${selectedBytes.length} bytes, YMODEM 数据包=${totalBlocks}, 最后一包有效字节=${selectedBytes.length % 1024 || 1024}`);
-  setStatus(`已选择文件：${f.name}, ${selectedBytes.length} bytes`);
-  setProgress(0, 100);
-  updateButtons();
+window.addEventListener('pageshow', () => {
+  loadSelectedFileFromInput('页面恢复后重新读取文件');
 });
 
 updateButtons();
